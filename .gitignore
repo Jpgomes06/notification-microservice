@@ -1,0 +1,37 @@
+# Environment files and local secrets
+.env
+.env.*
+!.env.example
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Operating systems
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Go build and test artifacts
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+coverage.out
+
+# Local caches
+.gocache/
+
+# Antigravity workspace files and generated artifacts
+.agents/
+.agent/artifacts/
+.agent/brain/
+.agents/artifacts/
+.agents/brain/
+.gemini/antigravity/
