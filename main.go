@@ -3,9 +3,10 @@ package main
 import (
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"os"
+
+	"github.com/sirupsen/logrus"
 
 	rabbitmqgateway "notification-microservice/infra/rabbitmq-gateway"
 )
@@ -31,20 +32,29 @@ func sendNotificationHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"message": "success"})
 }
 
-func main() {
+func loadRabbitMQURL() string {
 	url := os.Getenv("RABBITMQ_URL")
 	if url == "" {
 		url = "amqp://user:password@localhost:5672/"
 	}
+	return url
+}
+
+func startRabbitMQ(url string) {
 	err := rabbitmqgateway.InitRabbitMQ(url)
 	if err != nil {
-		log.Fatalf("Failed to initialize RabbitMQ: %v", err)
+		logrus.Fatalf("Failed to initialize RabbitMQ: %v", err)
 	}
+}
+
+func main() {
+	startRabbitMQ(loadRabbitMQURL())
 	defer rabbitmqgateway.Close()
+
 	http.HandleFunc("/ping", pingHandler)
 	http.HandleFunc("/send-notification", sendNotificationHandler)
-	log.Println("Server starting on port 8080...")
+
 	if err := http.ListenAndServe(":8080", nil); err != nil {
-		log.Fatalf("Server failed to start: %v", err)
+		logrus.Fatalf("Server failed to start: %v", err)
 	}
 }

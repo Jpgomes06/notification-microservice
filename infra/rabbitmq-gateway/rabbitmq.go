@@ -3,7 +3,6 @@ package rabbitmqgateway
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -35,7 +34,6 @@ func InitRabbitMQ(url string) error {
 	if err != nil {
 		return fmt.Errorf("failed to declare a queue: %w", err)
 	}
-	log.Println("Successfully connected to RabbitMQ and declared queue")
 	return nil
 }
 
