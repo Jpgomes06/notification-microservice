@@ -79,12 +79,14 @@ func sendNotificationHandler(validate *validator.Validate) http.HandlerFunc {
 
 		body, err := json.Marshal(message)
 		if err != nil {
-			http.Error(w, "Failed to prepare message", http.StatusInternalServerError)
+			logrus.Errorf("Failed to prepare message: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
 
 		if err := rabbitmqgateway.PublishNotification(body); err != nil {
-			http.Error(w, "Error sending to queue", http.StatusInternalServerError)
+			logrus.Errorf("Failed to publish notification: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
 
