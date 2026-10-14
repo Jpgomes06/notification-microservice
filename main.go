@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,19 +16,20 @@ import (
 	rabbitmqgateway "notification-microservice/infra/rabbitmq-gateway"
 )
 
-var validate = validator.New()
+type NotificationType string
 
-func init() {
-	validate.RegisterTagNameFunc(func(field reflect.StructField) string {
-		return field.Tag.Get("json")
-	})
-}
+const (
+	NotificationWeb   NotificationType = "web"
+	NotificationPush  NotificationType = "push"
+	NotificationSMS   NotificationType = "sms"
+	NotificationEmail NotificationType = "email"
+)
 
-var supportedTypes = map[string]struct{}{
-	"web":   {},
-	"push":  {},
-	"sms":   {},
-	"email": {},
+var supportedNotificationTypes = []NotificationType{
+	NotificationWeb,
+	NotificationPush,
+	NotificationSMS,
+	NotificationEmail,
 }
 
 type NotificationRequest struct {
@@ -53,43 +55,57 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"message": "pong"})
 }
 
-func sendNotificationHandler(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+func sendNotificationHandler(validate *validator.Validate) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
 
-	var req NotificationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
-		return
+		var req NotificationRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+			return
+		}
+
+		if message := validateNotification(validate, req); message != "" {
+			http.Error(w, message, http.StatusBadRequest)
+			return
+		}
+
+		message := NotificationMessage{
+			UserID:    req.UserID,
+			Message:   req.Message,
+			Type:      req.Type,
+			CreatedAt: time.Now().Format(time.RFC3339),
+		}
+
+		body, err := json.Marshal(message)
+		if err != nil {
+			http.Error(w, "Failed to prepare message", http.StatusInternalServerError)
+			return
+		}
+
+		if err := rabbitmqgateway.PublishNotification(body); err != nil {
+			http.Error(w, "Error sending to queue", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"message": "success"})
 	}
-
-	if message := validateNotification(req); message != "" {
-		http.Error(w, message, http.StatusBadRequest)
-		return
-	}
-
-	message := NotificationMessage{
-		UserID:    req.UserID,
-		Message:   req.Message,
-		Type:      req.Type,
-		CreatedAt: time.Now().Format(time.RFC3339),
-	}
-
-	body, err := json.Marshal(message)
-	if err != nil {
-		http.Error(w, "Failed to prepare message", http.StatusInternalServerError)
-		return
-	}
-
-	if err := rabbitmqgateway.PublishNotification(body); err != nil {
-		http.Error(w, "Error sending to queue", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"message": "success"})
 }
 
-func validateNotification(req NotificationRequest) string {
+func newValidator() *validator.Validate {
+	validate := validator.New()
+	validate.RegisterTagNameFunc(func(field reflect.StructField) string {
+		return field.Tag.Get("json")
+	})
+	return validate
+}
+
+func (t NotificationType) IsSupported() bool {
+	return slices.Contains(supportedNotificationTypes, t)
+}
+
+func validateNotification(validate *validator.Validate, req NotificationRequest) string {
 	err := validate.Struct(req)
 	if err != nil {
 		validationErrors, ok := err.(validator.ValidationErrors)
@@ -105,7 +121,7 @@ func validateNotification(req NotificationRequest) string {
 		return "Required fields are missing: " + strings.Join(fields, ", ")
 	}
 
-	if _, ok := supportedTypes[req.Type]; !ok {
+	if !NotificationType(req.Type).IsSupported() {
 		return fmt.Sprintf("Unsupported notification type %s", req.Type)
 	}
 
@@ -131,8 +147,10 @@ func main() {
 	startRabbitMQ(loadRabbitMQURL())
 	defer rabbitmqgateway.Close()
 
+	validate := newValidator()
+
 	http.HandleFunc("/ping", pingHandler)
-	http.HandleFunc("/send-notification", sendNotificationHandler)
+	http.HandleFunc("/send-notification", sendNotificationHandler(validate))
 
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		logrus.Fatalf("Server failed to start: %v", err)
