@@ -7,4 +7,5 @@ FROM alpine:latest
 WORKDIR /app
 COPY --from=builder /app/notification-service .
 EXPOSE 8080
+
 CMD ["./notification-service"]
