@@ -2,18 +2,20 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"reflect"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/sirupsen/logrus"
 
 	rabbitmqgateway "notification-microservice/infra/rabbitmq-gateway"
+	"notification-microservice/repository"
+	"notification-microservice/service"
 )
 
 type NotificationType string
@@ -38,13 +40,6 @@ type NotificationRequest struct {
 	Type    string `json:"type" validate:"required"`
 }
 
-type NotificationMessage struct {
-	UserID    string `json:"user_id"`
-	Message   string `json:"message"`
-	Type      string `json:"type"`
-	CreatedAt string `json:"created_at"`
-}
-
 func pingHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -52,7 +47,10 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func sendNotificationHandler(validate *validator.Validate) http.HandlerFunc {
+func sendNotificationHandler(
+	validate *validator.Validate,
+	notificationService *service.NotificationService,
+) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
 
@@ -67,22 +65,25 @@ func sendNotificationHandler(validate *validator.Validate) http.HandlerFunc {
 			return
 		}
 
-		message := NotificationMessage{
-			UserID:    req.UserID,
-			Message:   req.Message,
-			Type:      req.Type,
-			CreatedAt: time.Now().Format(time.RFC3339),
-		}
+		err := notificationService.Send(req.UserID, req.Message, req.Type)
 
-		body, err := json.Marshal(message)
-		if err != nil {
-			logrus.Errorf("Failed to prepare message: %v", err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		if errors.Is(err, service.ErrNotificationDiscarded) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": "notification discarded: user opted out",
+			})
 			return
 		}
 
-		if err := rabbitmqgateway.PublishNotification(body); err != nil {
-			logrus.Errorf("Failed to publish notification: %v", err)
+		if errors.Is(err, service.ErrOptOutCheck) {
+			logrus.Errorf("Failed to check opt-out for user %s: %v", req.UserID, err)
+			http.Error(w, "Failed to check notification preferences", http.StatusBadGateway)
+			return
+		}
+
+		if err != nil {
+			logrus.Errorf("Failed to send notification for user %s: %v", req.UserID, err)
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
@@ -147,9 +148,12 @@ func main() {
 	defer rabbitmqgateway.Close()
 
 	validate := newValidator()
+	optOutChecker := repository.RandomOptOutChecker{}
+	notificationRepository := repository.NewNotificationRepository(repository.RabbitMQNotificationPublisher{})
+	notificationService := service.NewNotificationService(optOutChecker, notificationRepository)
 
 	http.HandleFunc("/ping", pingHandler)
-	http.HandleFunc("/send-notification", sendNotificationHandler(validate))
+	http.HandleFunc("/send-notification", sendNotificationHandler(validate, notificationService))
 
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		logrus.Fatalf("Server failed to start: %v", err)
