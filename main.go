@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/sirupsen/logrus"
@@ -47,50 +48,79 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type appHandler func(w http.ResponseWriter, r *http.Request) error
+
+func errorHandler(fn appHandler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := fn(w, r); err != nil {
+			writeHTTPError(w, err)
+		}
+	}
+}
+
 func sendNotificationHandler(
 	validate *validator.Validate,
 	notificationService *service.NotificationService,
-) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+) appHandler {
+	return func(w http.ResponseWriter, r *http.Request) error {
 		defer r.Body.Close()
 
 		var req NotificationRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid JSON body", http.StatusBadRequest)
-			return
+			return requestError{message: "Invalid JSON body", status: http.StatusBadRequest}
 		}
 
 		if message := validateNotification(validate, req); message != "" {
-			http.Error(w, message, http.StatusBadRequest)
-			return
+			return requestError{message: message, status: http.StatusBadRequest}
 		}
 
-		err := notificationService.Send(req.UserID, req.Message, req.Type)
-
-		if errors.Is(err, service.ErrNotificationDiscarded) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusAccepted)
-			json.NewEncoder(w).Encode(map[string]string{
-				"message": "notification discarded: user opted out",
-			})
-			return
+		notification := service.Notification{
+			UserID:    req.UserID,
+			Message:   req.Message,
+			Type:      req.Type,
+			CreatedAt: time.Now().Format(time.RFC3339),
 		}
-
-		if errors.Is(err, service.ErrOptOutCheck) {
-			logrus.Errorf("Failed to check opt-out for user %s: %v", req.UserID, err)
-			http.Error(w, "Failed to check notification preferences", http.StatusBadGateway)
-			return
-		}
-
-		if err != nil {
-			logrus.Errorf("Failed to send notification for user %s: %v", req.UserID, err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
+		if err := notificationService.Send(notification); err != nil {
+			return err
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"message": "success"})
+		return nil
 	}
+}
+
+type requestError struct {
+	message string
+	status  int
+}
+
+func (e requestError) Error() string { return e.message }
+
+func writeHTTPError(w http.ResponseWriter, err error) {
+	var reqErr requestError
+	if errors.As(err, &reqErr) {
+		http.Error(w, reqErr.message, reqErr.status)
+		return
+	}
+
+	if errors.Is(err, service.ErrNotificationDiscarded) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "notification discarded: user opted out",
+		})
+		return
+	}
+
+	if errors.Is(err, service.ErrOptOutCheck) {
+		logrus.Errorf("Failed to check opt-out: %v", err)
+		http.Error(w, "Failed to check notification preferences", http.StatusBadGateway)
+		return
+	}
+
+	logrus.Errorf("Failed to send notification: %v", err)
+	http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 }
 
 func newValidator() *validator.Validate {
@@ -153,7 +183,7 @@ func main() {
 	notificationService := service.NewNotificationService(optOutChecker, notificationRepository)
 
 	http.HandleFunc("/ping", pingHandler)
-	http.HandleFunc("/send-notification", sendNotificationHandler(validate, notificationService))
+	http.Handle("/send-notification", errorHandler(sendNotificationHandler(validate, notificationService)))
 
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		logrus.Fatalf("Server failed to start: %v", err)
