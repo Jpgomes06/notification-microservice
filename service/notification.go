@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"notification-microservice/domain"
 )
 
 var (
@@ -21,13 +23,6 @@ type (
 	}
 )
 
-type Notification struct {
-	UserID    string `json:"user_id"`
-	Message   string `json:"message"`
-	Type      string `json:"type"`
-	CreatedAt string `json:"created_at"`
-}
-
 type NotificationService struct {
 	optOutChecker OptOutChecker
 	repository    NotificationRepository
@@ -37,7 +32,7 @@ func NewNotificationService(optOutChecker OptOutChecker, repository Notification
 	return &NotificationService{optOutChecker: optOutChecker, repository: repository}
 }
 
-func (s *NotificationService) Send(notification Notification) error {
+func (s *NotificationService) Send(notification domain.Notification) error {
 	optedOut, err := s.optOutChecker.IsOptedOut(notification.UserID)
 	if err != nil {
 		return fmt.Errorf("%w for user %s: %v", ErrOptOutCheck, notification.UserID, err)

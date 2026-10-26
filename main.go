@@ -14,6 +14,7 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/sirupsen/logrus"
 
+	"notification-microservice/domain"
 	rabbitmqgateway "notification-microservice/infra/rabbitmq-gateway"
 	"notification-microservice/repository"
 	"notification-microservice/service"
@@ -74,7 +75,7 @@ func sendNotificationHandler(
 			return requestError{message: message, status: http.StatusBadRequest}
 		}
 
-		notification := service.Notification{
+		notification := domain.Notification{
 			UserID:    req.UserID,
 			Message:   req.Message,
 			Type:      req.Type,
