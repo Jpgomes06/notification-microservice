@@ -41,9 +41,7 @@ func (s *NotificationService) Send(notification domain.Notification) error {
 		return ErrNotificationDiscarded
 	}
 
-	if notification.CreatedAt == "" {
-		notification.CreatedAt = time.Now().Format(time.RFC3339)
-	}
+	notification.CreatedAt = time.Now().Format(time.RFC3339)
 	if err := s.repository.Publish(notification); err != nil {
 		return fmt.Errorf("send notification: %w", err)
 	}
