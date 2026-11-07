@@ -9,8 +9,9 @@ import (
 )
 
 var (
-	conn *amqp.Connection
-	ch   *amqp.Channel
+	conn       *amqp.Connection
+	ch         *amqp.Channel
+	consumerCh *amqp.Channel
 )
 
 func InitRabbitMQ(url string) error {
@@ -38,12 +39,50 @@ func InitRabbitMQ(url string) error {
 }
 
 func Close() {
+	CloseConsumer()
 	if ch != nil {
 		ch.Close()
 	}
 	if conn != nil {
 		conn.Close()
 	}
+}
+
+func CloseConsumer() {
+	if consumerCh != nil {
+		consumerCh.Close()
+	}
+}
+
+func ConsumeNotifications() (<-chan amqp.Delivery, error) {
+	if conn == nil {
+		return nil, fmt.Errorf("rabbitmq connection is not initialized")
+	}
+
+	var err error
+	consumerCh, err = conn.Channel()
+	if err != nil {
+		return nil, fmt.Errorf("failed to open consumer channel: %w", err)
+	}
+
+	if err := consumerCh.Qos(10, 0, false); err != nil {
+		return nil, fmt.Errorf("failed to set consumer QoS: %w", err)
+	}
+
+	msgs, err := consumerCh.Consume(
+		"notifications",
+		"",
+		false,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to register consumer: %w", err)
+	}
+
+	return msgs, nil
 }
 
 func PublishNotification(message []byte) error {

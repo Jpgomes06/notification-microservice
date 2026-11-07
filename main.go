@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +16,12 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"notification-microservice/domain"
+	mongogateway "notification-microservice/infra/mongo-gateway"
 	rabbitmqgateway "notification-microservice/infra/rabbitmq-gateway"
+	rabbitmqadapter "notification-microservice/internal/adapters/inbound/rabbitmq"
+	mongoadapter "notification-microservice/internal/adapters/outbound/mongodb"
+	notificationprovider "notification-microservice/internal/adapters/outbound/notification"
+	applicationnotification "notification-microservice/internal/application/notification"
 	"notification-microservice/repository"
 	"notification-microservice/service"
 )
@@ -167,6 +173,18 @@ func loadRabbitMQURL() string {
 	return url
 }
 
+func loadMongoConfig() (string, string) {
+	uri := os.Getenv("MONGO_URI")
+	if uri == "" {
+		uri = "mongodb://localhost:27017"
+	}
+	dbName := os.Getenv("MONGO_DATABASE")
+	if dbName == "" {
+		dbName = "notification_db"
+	}
+	return uri, dbName
+}
+
 func startRabbitMQ(url string) {
 	err := rabbitmqgateway.InitRabbitMQ(url)
 	if err != nil {
@@ -174,9 +192,45 @@ func startRabbitMQ(url string) {
 	}
 }
 
+func startMongoDB(uri, dbName string) {
+	err := mongogateway.InitMongoDB(uri, dbName)
+	if err != nil {
+		logrus.Fatalf("Failed to initialize MongoDB: %v", err)
+	}
+}
+
 func main() {
 	startRabbitMQ(loadRabbitMQURL())
 	defer rabbitmqgateway.Close()
+
+	mongoURI, mongoDBName := loadMongoConfig()
+	startMongoDB(mongoURI, mongoDBName)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = mongogateway.Close(ctx)
+	}()
+
+	consumerDeliveries, err := rabbitmqgateway.ConsumeNotifications()
+	if err != nil {
+		logrus.Fatalf("Failed to start RabbitMQ consumer: %v", err)
+	}
+
+	consumerCtx, cancelConsumer := context.WithCancel(context.Background())
+	defer cancelConsumer()
+	go func() {
+		<-consumerCtx.Done()
+		rabbitmqgateway.CloseConsumer()
+	}()
+
+	consumerRepository := mongoadapter.NewNotificationRepository(mongogateway.GetDatabase())
+	notificationProcessor := applicationnotification.NewProcessor(consumerRepository, notificationprovider.NewProvider())
+	notificationConsumer := rabbitmqadapter.NewConsumer(notificationProcessor, consumerDeliveries)
+	go func() {
+		if err := notificationConsumer.Start(consumerCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logrus.Errorf("Consumer exited with error: %v", err)
+		}
+	}()
 
 	validate := newValidator()
 	optOutChecker := repository.RandomOptOutChecker{}
@@ -186,6 +240,7 @@ func main() {
 	http.HandleFunc("/ping", pingHandler)
 	http.Handle("/send-notification", errorHandler(sendNotificationHandler(validate, notificationService)))
 
+	logrus.Info("Server listening on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		logrus.Fatalf("Server failed to start: %v", err)
 	}

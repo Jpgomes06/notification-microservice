@@ -15,12 +15,28 @@ services:
       timeout: 5s
       retries: 5
 
+  mongodb:
+    image: mongo:7.0
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: notification_db
+    volumes:
+      - mongo_data:/data/db
+
   notification-service:
     build: .
     ports:
       - "8080:8080"
     environment:
       - RABBITMQ_URL=amqp://user:password@rabbitmq:5672/
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DATABASE=notification_db
     depends_on:
       rabbitmq:
         condition: service_healthy
+      mongodb:
+        condition: service_started
+
+volumes:
+  mongo_data:
